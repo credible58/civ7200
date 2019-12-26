@@ -22,15 +22,22 @@ VALS_NULL = {
 }
 
 VALS_OPMODE = {
-  [0] = "Select LSB mode",
-  [1] = "Select USB mode",
-  [2] = "Select AM mode",
-  [3] = "Select CW mode",
-  [4] = "Select RTTY mode",
-  [5] = "Select unknown mode",
-  [6] = "Select unknown mode",
-  [7] = "Select CW-R mode",
-  [8] = "Select RTTY-R mode"
+  [0] = "LSB mode",
+  [1] = "USB mode",
+  [2] = "AM mode",
+  [3] = "CW mode",
+  [4] = "RTTY mode",
+  [5] = "Unknown mode",
+  [6] = "Unknown mode",
+  [7] = "CW-R mode",
+  [8] = "RTTY-R mode"
+}
+
+VALS_FILTSET = {
+  [0] = "unknown",
+  [1] = "Wide",
+  [2] = "Mid",
+  [3] = "Narrow"
 }
 
 VALS_SROP = {
@@ -77,15 +84,15 @@ VALS_CMD = {
 
 -- format of entry: subcmd, has_subsub_cmd, reserved, description
 subcmd_opmode_table= {
-	{ 0x00, 0, 0, "Select LSB mode" },
-	{ 0x01, 0, 0, "Select USB mode" },
-	{ 0x02, 0, 0, "Select AM mode" },
-	{ 0x03, 0, 0, "Select CW mode" },
-	{ 0x04, 0, 0, "Select RTTY mode" },
-	{ 0x05, 0, 0, "Select unknown mode" },
-	{ 0x06, 0, 0, "Select unknown mode" },
-	{ 0x07, 0, 0, "Select CW-R mode" },
-	{ 0x08, 0, 0, "Select RTTY-R mode" },
+	{ 0x00, 0, 0, "LSB mode" },
+	{ 0x01, 0, 0, "USB mode" },
+	{ 0x02, 0, 0, "AM mode" },
+	{ 0x03, 0, 0, "CW mode" },
+	{ 0x04, 0, 0, "RTTY mode" },
+	{ 0x05, 0, 0, "Unknown mode" },
+	{ 0x06, 0, 0, "Unknown mode" },
+	{ 0x07, 0, 0, "CW-R mode" },
+	{ 0x08, 0, 0, "RTTY-R mode" },
         { 0xff, 0, 0, "end of table" }
 }
 
@@ -139,11 +146,15 @@ civ_subcmd06     = ProtoField.uint8("civ7200.subcmd",       "Sub-command",      
 civ_subcmd26     = ProtoField.uint8("civ7200.subcmd",       "Sub-command",         base.HEX,  VALS_SROP)
 
 civ_data         = ProtoField.string("civ7200.data",        "Data")
+civ_opmode       = ProtoField.uint8("civ7200.opmode",       "Data",                base.HEX,  VALS_OPMODE)
+civ_filtset      = ProtoField.uint8("civ7200.filtset",      "Data",                base.HEX,  VALS_FILTSET)
+
 civ_delim_end    = ProtoField.uint8("civ7200.delim_end",    "End Delimiter",       base.HEX) 
 civ_freq         = ProtoField.uint32("civ7200.frequency",   "Frequency",           base.DEC)
 civ7200.fields = {
   civ_delim_start, civ_dst_addr, civ_src_addr, civ_cmd, 
   civ_subcmd01, civ_subcmd06, civ_subcmd26,
+  civ_opmode, civ_filtset,
   civ_data, civ_freq, civ_delim_end
 } 
 
@@ -225,6 +236,12 @@ function get_freq_u32(buffer, ptr)
   local tvbr
   local byte_in_hex
 
+  -- in case we enter here by mistake we need to make sure
+  -- we have enough bytes to consume
+  if (ptr + 4) > (buffer:len() - 1) then
+    return 0
+  end
+
   tvbr = buffer:range(ptr+4,1)  -- set up a range
   byte_in_hex = tvbr:uint()  -- extract the byte
   freq_u32 = freq_u32 + (bit.rshift(byte_in_hex, 4) * 1000000000)
@@ -257,6 +274,7 @@ function civ7200.dissector(buffer,pinfo,tree)
   local civ_dstaddr
   local civ_srcaddr
   local ptr = 0
+  local data_offset
   local tvbr
   local frequency -- string version of the fequency
   local subcmd_table
@@ -285,6 +303,8 @@ function civ7200.dissector(buffer,pinfo,tree)
       subtree:add(civ_delim_start, buffer(ptr,2))
       ptr = ptr + 2
       subtree:add(civ_dst_addr, buffer(ptr,1))
+      tvbr = buffer:range(ptr,1)  -- set up a range
+      civ_dstaddr = tvbr:uint()  -- extract the bytes
       ptr = ptr + 1
       subtree:add(civ_src_addr, buffer(ptr,1))
       tvbr = buffer:range(ptr,1)  -- set up a range
@@ -339,19 +359,30 @@ function civ7200.dissector(buffer,pinfo,tree)
         cmd_string = cmd_string .. ":" .. subcmd_string
       end
 
-      data_len = length - ptr - 1
+      data_offset = ptr
+      data_len = length - data_offset - 1
       if data_len > 0 then
         tvbr = buffer:range(ptr,data_len)  -- set up a range
         local civ_payload = tvbr:bytes()  -- extract the bytes
-subtree:add(civ_data, tostring(civ_payload))
 
-        if(cmd == 0x00 or cmd == 0x02 or cmd == 0x03 or cmd == 0x04 or cmd == 0x05) then
+        if(cmd == 0x00 or cmd == 0x02 or cmd == 0x03 or cmd == 0x05) then
           freq = get_freq_u32(buffer, ptr)
           subtree:add(civ_freq, freq)
-        else
+          cmd_string = cmd_string .. ": " .. freq
+       else
           subtree:add(civ_data, tostring(civ_payload))
         end
         ptr = ptr + data_len
+
+        if(cmd == 0x04 and civ_dstaddr == 0xE0) then
+          tvbr = buffer:range(data_offset,1)  -- set up a range
+          subtree:add(civ_opmode, tvbr:uint())
+          cmd_string = cmd_string .. ": " .. VALS_OPMODE[tvbr:uint()]
+
+          tvbr = buffer:range(data_offset+1,1)  -- set up a range
+          subtree:add(civ_filtset, tvbr:uint())
+          cmd_string = cmd_string .. "/" .. VALS_FILTSET[tvbr:uint()]
+        end
       end
 
       subtree:add(civ_delim_end,  buffer(ptr,1))
